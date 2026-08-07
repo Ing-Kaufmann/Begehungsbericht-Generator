@@ -590,24 +590,43 @@ async function generatePDF() {
     ].filter(r => r[1]);
 
     if (metaRows.length) {
-      const rowH = 6;
-      const boxH = 4 + Math.ceil(metaRows.length / 2) * rowH + 4;
+      const colWidth = CONTENT_W / 2;
+      const valMaxWidth = colWidth - 34;
+      const lineH = 4.2;
+      const minRowH = 6;
+
+      // Zeilen paarweise gruppieren (entspricht der 2-spaltigen Darstellung)
+      const pairs = [];
+      for (let i = 0; i < metaRows.length; i += 2) {
+        pairs.push(metaRows.slice(i, i + 2));
+      }
+
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+      const pairsWithLines = pairs.map(pair => {
+        const linesArr = pair.map(([, val]) => doc.splitTextToSize(String(val), valMaxWidth));
+        const maxLines = Math.max(...linesArr.map(l => l.length), 1);
+        // Zeilenhöhe an tatsächlichen Umbruch anpassen (z. B. lange Projektnamen über mehrere Zeilen)
+        const rowH = Math.max(minRowH, maxLines * lineH + 1.8);
+        return { pair, linesArr, rowH };
+      });
+
+      const boxH = 4 + pairsWithLines.reduce((sum, r) => sum + r.rowH, 0) + 4;
       doc.setFillColor(bgR, bgG, bgB);
       doc.setDrawColor(lr, lg, lb);
       doc.roundedRect(MARGIN_L, y, CONTENT_W, boxH, 2, 2, 'FD');
-      let mx = MARGIN_L + 4, my = y + 7, col = 0;
-      const colWidth = CONTENT_W / 2;
-      metaRows.forEach(([label, val]) => {
-        doc.setFont('helvetica', 'bold'); doc.setFontSize(8.3);
-        doc.setTextColor(br, bg_, bb);
-        doc.text(label + ':', mx, my);
-        doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
-        doc.setTextColor(inkR, inkG, inkB);
-        const valLines = doc.splitTextToSize(String(val), colWidth - 34);
-        doc.text(valLines, mx + 32, my);
-        col += 1;
-        if (col % 2 === 0) { mx = MARGIN_L + 4; my += rowH; }
-        else { mx = MARGIN_L + 4 + colWidth; }
+
+      let my = y + 7;
+      pairsWithLines.forEach(({ pair, linesArr, rowH }) => {
+        pair.forEach(([label, val], colIdx) => {
+          const mx = MARGIN_L + 4 + colIdx * colWidth;
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(8.3);
+          doc.setTextColor(br, bg_, bb);
+          doc.text(label + ':', mx, my);
+          doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+          doc.setTextColor(inkR, inkG, inkB);
+          doc.text(linesArr[colIdx], mx + 32, my);
+        });
+        my += rowH;
       });
       y += boxH + 6;
     }
@@ -630,7 +649,7 @@ async function generatePDF() {
       doc.setTextColor(br, bg_, bb);
       y = checkPageBreak(doc, y, 8);
       doc.text('Begehungspunkte', MARGIN_L, y);
-      y += 7;
+      y += 10;
     }
 
     punkte.forEach((p, idx) => {
