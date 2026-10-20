@@ -235,6 +235,8 @@ textarea { resize: vertical; min-height: 4.2em; }
     <button class="btn-primary" id="btn-generate" type="button">PDF erzeugen</button>
     <button class="btn-secondary" id="btn-save-draft" type="button">Entwurf speichern</button>
     <button class="btn-secondary" id="btn-load-draft" type="button">Entwurf laden</button>
+    <button class="btn-secondary" id="btn-export-draft" type="button" title="Entwurf inkl. Fotos als .json-Datei speichern">Entwurf als Datei</button>
+    <button class="btn-secondary" id="btn-import-draft" type="button" title="Entwurf aus .json-Datei laden (z. B. vom Telegram-Bot)">Entwurf aus Datei</button>
     <button class="btn-secondary" id="btn-reset" type="button">Zurücksetzen</button>
     <span class="status-msg" id="status-msg"></span>
   </div>
@@ -242,6 +244,7 @@ textarea { resize: vertical; min-height: 4.2em; }
 </div>
 
 <input type="file" id="photo-input-hidden" accept="image/*" multiple style="display:none">
+<input type="file" id="draft-input-hidden" accept=".json,application/json" style="display:none">
 
 
 <div class="preview-overlay" id="preview-overlay" role="dialog" aria-modal="true" aria-label="PDF-Vorschau">
@@ -475,21 +478,65 @@ function entwurfSpeichern() {
   }
 }
 
+// Entwurf (Objekt) in das Formular übernehmen – genutzt von "Entwurf laden", "Entwurf aus Datei"
+// und vom Telegram-Bot (window.IKBegehung.ladeEntwurf)
+function wendeEntwurfAn(draft) {
+  const pj = draft.projekt || {};
+  document.getElementById('f-projekt').value = pj.projekt || '';
+  document.getElementById('f-adresse').value = pj.adresse || '';
+  document.getElementById('f-datum').value = pj.datum || '';
+  document.getElementById('f-nr').value = pj.nr || '';
+  document.getElementById('f-teilnehmer').value = pj.teilnehmer || '';
+  document.getElementById('f-wetter').value = pj.wetter || '';
+  document.getElementById('f-allgemein').value = pj.allgemein || '';
+  let maxId = 0;
+  punkte = (draft.punkte || []).map((p, i) => {
+    const id = Number(p.id) || (i + 1);
+    maxId = Math.max(maxId, id);
+    return { id, bereich: p.bereich || '', feststellung: p.feststellung || '', empfehlung: p.empfehlung || '',
+             verantwortlich: p.verantwortlich || '', frist: p.frist || '',
+             fotos: (p.fotos || []).filter(f => f && f.dataUrl).map(f => ({
+               dataUrl: f.dataUrl, width: f.width || 0, height: f.height || 0,
+               name: f.name || 'Foto', caption: f.caption || '' })) };
+  });
+  punktIdCounter = Math.max(draft.punktIdCounter || 0, maxId);
+  renderPunkte();
+}
+
+function entwurfAlsDatei() {
+  const proj = sammleProjektdaten();
+  const draft = { format: 'ik_begehungsbericht_v1', projekt: proj, punkte, punktIdCounter };
+  const blob = new Blob([JSON.stringify(draft)], { type: 'application/json' });
+  const slug = (proj.projekt || 'Begehungsbericht').replace(/[^a-zA-Z0-9_\-]+/g, '_').slice(0, 40);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `Begehungsbericht_${slug}_${proj.datum || 'Entwurf'}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  setzeStatus('Entwurf als Datei gespeichert.', true);
+}
+
+function entwurfAusDatei(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      wendeEntwurfAn(JSON.parse(e.target.result));
+      setzeStatus('Entwurf aus Datei geladen.', true);
+    } catch (err) {
+      console.error(err);
+      setzeStatus('Datei ist kein gültiger Entwurf.', false);
+    }
+  };
+  reader.readAsText(file);
+}
+
 function entwurfLaden() {
   const raw = localStorage.getItem(DRAFT_KEY);
   if (!raw) { setzeStatus('Kein gespeicherter Entwurf gefunden.', false); return; }
   try {
     const draft = JSON.parse(raw);
-    document.getElementById('f-projekt').value = draft.projekt.projekt || '';
-    document.getElementById('f-adresse').value = draft.projekt.adresse || '';
-    document.getElementById('f-datum').value = draft.projekt.datum || '';
-    document.getElementById('f-nr').value = draft.projekt.nr || '';
-    document.getElementById('f-teilnehmer').value = draft.projekt.teilnehmer || '';
-    document.getElementById('f-wetter').value = draft.projekt.wetter || '';
-    document.getElementById('f-allgemein').value = draft.projekt.allgemein || '';
-    punkte = draft.punkte || [];
-    punktIdCounter = draft.punktIdCounter || punkte.length;
-    renderPunkte();
+    wendeEntwurfAn(draft);
     setzeStatus('Entwurf geladen.', true);
   } catch (err) {
     console.error(err);
@@ -998,12 +1045,30 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('preview-overlay').addEventListener('click', e => { if (e.target.id === 'preview-overlay') schliesseVorschau(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') schliesseVorschau(); });
   document.getElementById('btn-save-draft').addEventListener('click', entwurfSpeichern);
+  document.getElementById('btn-export-draft').addEventListener('click', entwurfAlsDatei);
+  document.getElementById('btn-import-draft').addEventListener('click', () => document.getElementById('draft-input-hidden').click());
+  document.getElementById('draft-input-hidden').addEventListener('change', e => { entwurfAusDatei(e.target.files[0]); e.target.value = ''; });
   document.getElementById('btn-load-draft').addEventListener('click', entwurfLaden);
   document.getElementById('btn-reset').addEventListener('click', zuruecksetzen);
   addPunkt();
   renderPunkte();
 });
 
+
+// ===================== Schnittstelle für den Telegram-Bot =====================
+// Der Bot öffnet diese Seite unsichtbar, lädt einen Entwurf und lässt das PDF genau so erzeugen
+// wie der Knopf "PDF erzeugen" – damit sehen alle Begehungsberichte gleich aus.
+window.IKBegehung = {
+  version: 1,
+  bereit: () => !!(window.jspdf && LOGO_DATA_URL),
+  ladeEntwurf: (draft) => { wendeEntwurfAn(draft); return punkte.length; },
+  pdfDataUri: () => { const { doc, filename } = buildPDF(); return { dataUri: doc.output('datauristring'), filename }; }
+};
+window.ikGenerator = {
+  bereit: window.IKBegehung.bereit,
+  ladeEntwurf: window.IKBegehung.ladeEntwurf,
+  pdfBase64: () => { const { doc, filename } = buildPDF(); return { filename, base64: doc.output('datauristring').split(',')[1] }; }
+};
 </script>
 </body>
 </html>
