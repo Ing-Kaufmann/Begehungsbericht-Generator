@@ -515,54 +515,125 @@ function zuruecksetzen() {
 const PAGE_W = 210, PAGE_H = 297;
 const MARGIN_L = 15, MARGIN_R = 15;
 const CONTENT_W = PAGE_W - MARGIN_L - MARGIN_R;
-const HEADER_BOTTOM_Y = 32;
-const CONTENT_TOP_Y = 40;
-// Fußzeile (Vorlage Honorarangebot Kleinwallstadt, 09/2026), einzeilige Variante:
-// auf allen Seiten einzeilige Kontaktzeile (24 mm unterer Rand)
+const CONTENT_TOP_Y_FIRST = 46;   // Seite 1: Kopfzeile D2 mit Adresse (oberer Rand 46 mm)
+const CONTENT_TOP_Y = 40;         // Folgeseiten: kleine Kopfzeile (oberer Rand 40 mm)
+// Fußzeile (Vorlage Konzept_Neubau_KFW_Vorlage.docx, 10/2026):
+// Seite 1 dreispaltiger Block (unterer Rand 37 mm), Folgeseiten einzeilige Kontaktzeile (24 mm)
+const CONTENT_BOTTOM_LIMIT_FIRST = PAGE_H - 37;
 const CONTENT_BOTTOM_LIMIT = PAGE_H - 24;
-function bottomLimit(doc) { return CONTENT_BOTTOM_LIMIT; }
-
-let LOGO_DATA_URL = null; // wird beim Laden der Seite gesetzt
-
-function drawHeader(doc) {
-  const [br, bg_, bb] = hexToRgb(CI.blue);
-  const [tr, tg, tb] = hexToRgb(CI.teal);
-  const [mr, mg, mb] = hexToRgb(CI.inkMid);
-
-  if (LOGO_DATA_URL) {
-    try { doc.addImage(LOGO_DATA_URL, 'JPEG', MARGIN_L, 8, 18, 18); } catch (e) { /* ignore */ }
-  }
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(12.5);
-  doc.setTextColor(tr, tg, tb);
-  doc.text('INGENIEURBÜRO KAUFMANN', 40, 14);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.3);
-  doc.setTextColor(br, bg_, bb);
-  doc.text('TGA-Planung · Energieberatung · Wärmekonzepte', 40, 19);
-
-  doc.setFontSize(8);
-  doc.setTextColor(mr, mg, mb);
-  doc.text('Ringstraße 10A · 97903 Collenberg', PAGE_W - MARGIN_R, 12, { align: 'right' });
-  doc.text('info@ing-kaufmann.de', PAGE_W - MARGIN_R, 16.5, { align: 'right' });
-  doc.text('0162 / 72 22 043', PAGE_W - MARGIN_R, 21, { align: 'right' });
-
-  doc.setDrawColor(tr, tg, tb);
-  doc.setLineWidth(0.5);
-  doc.line(MARGIN_L, HEADER_BOTTOM_Y, PAGE_W - MARGIN_R, HEADER_BOTTOM_Y);
+function bottomLimit(doc) {
+  return doc.internal.getCurrentPageInfo().pageNumber === 1 ? CONTENT_BOTTOM_LIMIT_FIRST : CONTENT_BOTTOM_LIMIT;
 }
 
+let LOGO_DATA_URL = null; // wird beim Laden der Seite gesetzt (auf sichtbaren Inhalt zugeschnitten)
+let LOGO_RATIO = 1;       // Breite / Höhe des zugeschnittenen Logos
+const PT = 25.4 / 72;     // 1 pt in mm
+
+// Logo auf den sichtbaren Inhalt zuschneiden (weißen Rand der 400×400-Quelldatei entfernen)
+function ladeLogoZugeschnitten(src) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth, h = img.naturalHeight;
+        const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+        const cx = cv.getContext('2d'); cx.drawImage(img, 0, 0);
+        const d = cx.getImageData(0, 0, w, h).data;
+        let x0 = w, y0 = h, x1 = -1, y1 = -1;
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+          const i = (y * w + x) * 4;
+          const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          if (lum < 243) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        }
+        if (x1 < x0) { resolve({ url: src, ratio: w / h }); return; }
+        const cw = x1 - x0 + 1, ch = y1 - y0 + 1;
+        const out = document.createElement('canvas'); out.width = cw; out.height = ch;
+        const oc = out.getContext('2d'); oc.fillStyle = '#FFFFFF'; oc.fillRect(0, 0, cw, ch);
+        oc.drawImage(cv, x0, y0, cw, ch, 0, 0, cw, ch);
+        resolve({ url: out.toDataURL('image/jpeg', 0.95), ratio: cw / ch });
+      } catch (e) { resolve({ url: src, ratio: img.naturalWidth / img.naturalHeight }); }
+    };
+    img.onerror = () => resolve({ url: src, ratio: 1 });
+    img.src = src;
+  });
+}
+
+// ---- IK-Kopfzeile (Variante D2, 16.10.2026 – aus CI-Skill ing-kaufmann-ci) ----
+const HD_CLAIM = 'TGA-PLANUNG  ·  ENERGIEBERATUNG  ·  WÄRMEKONZEPTE';
+
+function drawHeader(doc) {
+  // Schriftzustand sichern, damit der Fließtext nach einem Seitenumbruch unverändert weiterläuft
+  const _font = doc.getFont(), _size = doc.getFontSize(), _color = doc.getTextColor();
+  const first = doc.internal.getCurrentPageInfo().pageNumber === 1;
+  const [tr, tg, tb] = hexToRgb('#00AB84');
+  const [dr, dg, db] = hexToRgb('#024665');
+  const [gr, gg, gb] = hexToRgb('#6B7680');
+  const [lr, lg, lb] = hexToRgb('#D9DDE0');
+
+  const top = 12;
+  const lw = first ? 34 : 24;
+  const lh = lw / LOGO_RATIO;
+  if (LOGO_DATA_URL) {
+    try { doc.addImage(LOGO_DATA_URL, 'JPEG', MARGIN_L, top, lw, lh); } catch (e) { /* ignore */ }
+  }
+  const m = top + lh / 2; // vertikale Mitte des Logos
+
+  const size = first ? 8.5 : 7;
+  const space = (first ? 1.6 : 1.4) * PT;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(size);
+  const tw = doc.getTextWidth(HD_CLAIM) + space * (HD_CLAIM.length - 1);
+  const tx = PAGE_W - MARGIN_R - tw;
+
+  let yl;
+  doc.setFillColor(tr, tg, tb);
+  if (first) {
+    doc.rect(tx - 3.5, m - 6.8, 0.8, 13, 'F');
+    doc.setTextColor(dr, dg, db);
+    doc.text(HD_CLAIM, tx, m - 3.6, { charSpace: space });
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
+    doc.setTextColor(gr, gg, gb);
+    doc.text('Ringstraße 10A · 97903 Collenberg', tx, m + 1.2);
+    const tel = 'Tel. 0162 / 72 22 043  ·  ';
+    doc.text(tel, tx, m + 5.2);
+    doc.setTextColor(tr, tg, tb);
+    doc.text('info@ing-kaufmann.de', tx + doc.getTextWidth(tel), m + 5.2);
+    yl = top + lh + 3;
+  } else {
+    doc.rect(tx - 3.5, m - 2.2, 0.8, 4.4, 'F');
+    doc.setTextColor(dr, dg, db);
+    doc.text(HD_CLAIM, tx, m + size * PT * 0.35, { charSpace: space });
+    yl = top + lh + 2.5;
+  }
+
+  // Unterkante: hellgrau 0,75 pt über volle Breite, unter dem Logo Teal 1,5 pt
+  doc.setDrawColor(lr, lg, lb); doc.setLineWidth(0.75 * PT);
+  doc.line(MARGIN_L, yl, PAGE_W - MARGIN_R, yl);
+  doc.setDrawColor(tr, tg, tb); doc.setLineWidth(1.5 * PT);
+  doc.line(MARGIN_L, yl, MARGIN_L + lw, yl);
+
+  doc.setFont(_font.fontName, _font.fontStyle); doc.setFontSize(_size); doc.setTextColor(_color);
+}
+
+// ---- IK-Fußzeile (Vorlage Konzept_Neubau_KFW_Vorlage.docx, 10/2026 – aus CI-Skill ing-kaufmann-ci) ----
 const FT_LEIST = ['Heizung', 'Lüftung', 'Klima', 'Sanitär', 'Energieberatung'];
+const FT_COLS = [
+  ['Ingenieurbüro Kaufmann', ['Inhaber: Christian Kaufmann, B.Eng.', 'Einzelunternehmen',
+                              'UST-ID: DE449720262', 'Mitglied der Bayer. Ingenieurekammer-Bau'], []],
+  ['Kontakt', ['Ringstraße 10A · 97903 Collenberg', 'Tel. 0162 / 72 22 043',
+               'info@ing-kaufmann.de', 'www.ing-kaufmann.de'], [2, 3]],
+  ['Bankverbindung', ['Sparkasse Miltenberg Aschaffenburg', 'IBAN: DE78 7955 0000 0013 0463 70',
+                      'BIC: BYLADEM1ASA'], []]
+];
 const FT_ZEILE = 'Ingenieurbüro Kaufmann · Ringstraße 10A · 97903 Collenberg · Tel. 0162 / 72 22 043 · ' +
                  'info@ing-kaufmann.de · www.ing-kaufmann.de';
 
 function drawFooterOnPage(doc, pageNum, totalPages) {
+  const first = pageNum === 1;
   const [tr, tg, tb] = hexToRgb('#00AB84');
   const [dr, dg, db] = hexToRgb('#024665');
   const [gr, gg, gb] = hexToRgb('#6B7680');
-  const yl = PAGE_H - 17; // Baseline der Leistungszeile
+  const [lr, lg, lb] = hexToRgb('#D9DDE0');
+  const yl = PAGE_H - (first ? 30 : 17); // Baseline der Leistungszeile
 
   // Leistungszeile: ■ Heizung ■ Lüftung ■ Klima ■ Sanitär ■ Energieberatung
   let x = MARGIN_L;
@@ -576,18 +647,40 @@ function drawFooterOnPage(doc, pageNum, totalPages) {
     x += doc.getTextWidth(w) + 4;
   });
 
-  // Seite X von Y + Teal-Linie
+  // Seite X von Y + Teal-Linie 0,75 pt
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
   doc.setTextColor(gr, gg, gb);
   doc.text(`Seite ${pageNum} von ${totalPages}`, PAGE_W - MARGIN_R, yl, { align: 'right' });
   doc.setDrawColor(tr, tg, tb);
-  doc.setLineWidth(0.6);
+  doc.setLineWidth(0.75 * PT);
   doc.line(MARGIN_L, yl + 2.5, PAGE_W - MARGIN_R, yl + 2.5);
 
-  // Einzeilige Kontaktzeile auf allen Seiten
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
-  doc.setTextColor(gr, gg, gb);
-  doc.text(FT_ZEILE, MARGIN_L, yl + 6.5);
+  if (first) {
+    // Seite 1: dreispaltiger Block (Spaltenverhältnis 2990 / 3659 / 2990)
+    const widths = [2990, 3659, 2990].map(w => w / 9639 * CONTENT_W);
+    FT_COLS.forEach(([head, lines, tealIdx], i) => {
+      const x0 = MARGIN_L + widths.slice(0, i).reduce((a, b) => a + b, 0);
+      const cx = x0 + (i === 0 ? 0 : 4);
+      const y = yl + 7;
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(7);
+      doc.setTextColor(dr, dg, db);
+      doc.text(head, cx, y);
+      doc.setFont('helvetica', 'normal');
+      lines.forEach((t, j) => {
+        if (tealIdx.includes(j)) doc.setTextColor(tr, tg, tb); else doc.setTextColor(gr, gg, gb);
+        doc.text(t, cx, y + (j + 1) * 3.3);
+      });
+      if (i > 0) {
+        doc.setDrawColor(lr, lg, lb); doc.setLineWidth(0.5 * PT);
+        doc.line(x0, yl + 5, x0, yl + 21.5);
+      }
+    });
+  } else {
+    // Folgeseiten: einzeilige Kontaktzeile
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
+    doc.setTextColor(gr, gg, gb);
+    doc.text(FT_ZEILE, MARGIN_L, yl + 6.5);
+  }
 }
 
 function formatDatum(iso) {
@@ -626,7 +719,7 @@ function buildPDF() {
 
     drawHeader(doc);
 
-    let y = CONTENT_TOP_Y;
+    let y = CONTENT_TOP_Y_FIRST;
     const [br, bg_, bb] = hexToRgb(CI.blue);
     const [inkR, inkG, inkB] = hexToRgb(CI.ink);
     const [lr, lg, lb] = hexToRgb(CI.line);
@@ -894,7 +987,8 @@ function ladeVorschauHerunter() {
 
 // ===================== Init =====================
 document.addEventListener('DOMContentLoaded', () => {
-  LOGO_DATA_URL = document.querySelector('.app-header img').src;
+  ladeLogoZugeschnitten(document.querySelector('.app-header img').src)
+    .then(r => { LOGO_DATA_URL = r.url; LOGO_RATIO = r.ratio; });
   document.getElementById('f-datum').valueAsDate = new Date();
   document.getElementById('btn-add-punkt').addEventListener('click', addPunkt);
   document.getElementById('btn-generate').addEventListener('click', () => generatePDF('download'));
